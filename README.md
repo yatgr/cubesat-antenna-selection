@@ -1,212 +1,111 @@
-# CubeSat Antenna Selection via MCDM 
+# CubeSat Antenna Selection
 
-A Multi-Criteria Decision Making (MCDM) small tool that ranks candidate antenna using the **TOPSIS**
-method (Technique for Order Preference by Similarity to Ideal Solution).
+A framework and Python tool ([`antenna_selection.py`](antenna_selection.py)) for evaluating CubeSat antennas across **RF Performance**, **Mechanical & AIT (Assembly, Integration & Test)**, and **Space Qualification** criteria.
 
-It merges two tabular datasets:
+The selection process is divided into two stages:
+1. **Stage 1 — Feasibility Screening:** Eliminates candidates that violate hard mission constraints (frequency band, polarization, CubeSat U-size, height profile, mass, or deployment mechanism).
+2. **Stage 2 — Trade-Off Scoring:** Ranks surviving candidates using mission-specific weight profiles (`balanced`, `link_budget`, `compact_1u`, `low_risk`, `classic_5`).
 
-- an **RF performance** table (gain, bandwidth, efficiency, polarization, ...)
-- a **mechanical / integration** table (dimensions, mass, substrate,
-  fabrication method, ...), referred to here as **AIT** (Assembly,
-  Integration & Test)
+---
 
-and produces a single ranked list, from the design closest to the ideal
-trade-off to the one furthest from it.
+## 1. Selection Criteria
 
-> The `data/` folder contains a small **synthetic example dataset** (six
-> fictitious antennas) so the script runs out of the box. Replace it with
-> your own extracted literature data — see [Input Data Format](#input-data-format).
+### 1.1 RF & Link Budget (`data/example_rf_data.csv`)
 
-## Why This Tool 
-Selecting the right antennas for a CubeSat mission often involves balancing multiple, often conflicting, criteria (such as mass, Gain, cost, and weight). This repository provides a systematic way to evaluate and prioritize these alternatives.
-
-Critical aspects of this tool:
-- **The method selected:** Choosing the appropriate MCDM algorithm for the specific evaluation.
-- **The parameters used:** Defining the right criteria for decision-making.
-- **The selection of scores:** Assigning weights and scores based on the specific mission's focus and constraints.
-
-## Why TOPSIS
-
-Several MCDM methods exist (AHP, WSM, ELECTRE, PROMETHEE, ...); TOPSIS was
-chosen for this use case because it:
-
-- **Handles benefit and cost criteria natively.** Gain, bandwidth and
-  efficiency should be maximized; height and mass should be minimized.
-  TOPSIS handles both directly through the positive/negative ideal solution
-  construction, with no need for utility-function transformations.
-- **Needs only one round of subjective judgment.** Unlike AHP, it does not
-  require pairwise comparisons between every criterion — only a single
-  weight vector — which keeps the method reproducible and limits where
-  subjectivity can enter the analysis.
-- **Produces one continuous, interpretable score per alternative.** The
-  *closeness coefficient* C\* ∈ [0, 1] has a direct geometric meaning
-  (relative distance to the ideal design) and is easy to report and rank by.
-- **Is well established for engineering trade studies**, including antenna
-  and small-satellite subsystem selection, which supports reproducibility
-  and makes the result easy for reviewers to sanity-check.
-
-## Criteria and Weights
-
-| Criterion | Column | Direction | Weight |
+| Criterion | Column | Type | Rationale |
 |---|---|---|---|
-| Max Gain | `Max Gain (dBi)` | Maximize | 0.25 |
-| Bandwidth | `Bandwidth (%)` | Maximize | 0.20 |
-| Radiation Efficiency | `Radiation Efficiency (%)` | Maximize | 0.25 |
-| Height / profile | derived from `Dimensions (mm)` | Minimize | 0.15 |
-| Mass | `Weight (g)` | Minimize | 0.15 |
+| **Frequency Band** | `Frequency Band`, `Central Frequency (GHz)` | Filter | Must match the mission frequency allocation (UHF/VHF, S, X, Ka). |
+| **Max Gain** | `Max Gain (dBi)` | Maximize | Drives link margin ($\text{EIRP}$ and $G/T$). |
+| **Radiation Efficiency** | `Radiation Efficiency (%)` | Maximize | Minimizes DC power consumption and thermal dissipation. |
+| **Impedance Bandwidth** | `Bandwidth (%)` | Maximize | $\lvert S_{11}\rvert \le -10\text{ dB}$ margin against fabrication tolerances and thermal drift. |
+| **Polarization** | `Polarization` | Filter | `RHCP`/`LHCP` preferred in LEO to mitigate Faraday rotation and attitude mismatch. |
+| **Axial Ratio Bandwidth** | `ARBW (%)` | Maximize | $\le 3\text{ dB}$ circular polarization purity bandwidth ($0\%$ for linear antennas). |
 
-**Rationale.** The five criteria fall into two groups:
+### 1.2 Mechanical & AIT (`data/example_ait_data.csv`)
 
-1. **Link-budget performance — gain, bandwidth, efficiency (70% combined).**
-   Gain and radiation efficiency together determine how much of the
-   transmitter's power actually reaches the link (EIRP on transmit, G/T on
-   receive); on a power-constrained CubeSat, every dB lost to inefficiency
-   has to be recovered elsewhere in the budget, so these two receive the
-   highest individual weights (0.25 each). Bandwidth is weighted slightly
-   lower (0.20) because it mainly affects *robustness* — tolerance to
-   fabrication variance, on-orbit thermal detuning, and frequency-plan
-   flexibility — rather than the link margin itself.
-2. **Physical integration cost — height and mass (30% combined).** CubeSats
-   are built to strict, standardized volume (`U`) and mass budgets, so a
-   bulky or heavy antenna directly displaces payload or other subsystems.
-   These are real constraints, but for the body-mounted/conformal antennas
-   that dominate this design space they typically act as *feasibility*
-   constraints (does it fit, does it stay within the mass budget) more than
-   as continuously optimized objectives — so they are weighted lower than
-   raw RF performance, while still being substantial enough (0.15 each) to
-   separate designs that are RF-equivalent but not equally practical to fly.
+| Criterion | Column / Derived | Type | Rationale |
+|---|---|---|---|
+| **CubeSat Size** | `Target CubeSat Size` | Filter | Bus form factor compatibility (`1U`, `3U`, `6U`, ...). |
+| **Height Profile** | `Height_Profile_mm` *(3rd value of `Dimensions (mm)`)* | Minimize / Filter | Protrusion above panel (standard CDS deployer rail limit is $\le 6.5\text{ mm}$). |
+| **Footprint Area** | `Footprint_Area_mm2` *(derived $L \times W$)* | Minimize | Panel surface area competing with body-mounted solar cells. |
+| **Mass** | `Weight (g)` | Minimize / Filter | Impact on total spacecraft mass budget. |
+| **Substrate & AIT** | `Substrate Material`, `Fabrication Method` | Maximize ($1\text{–}5$) | Space-grade low-loss/low-outgassing laminates (e.g., Rogers RT/duroid, RO4003C) score higher than commercial FR4; single-layer PCB scores higher than complex multilayer/air-gap assemblies. |
+| **Deployment** | `Deployment Mechanism` | Filter / Risk | Conformal body-mounted designs avoid single-point mechanical deployment failures. |
 
-These weights are a starting point that encodes "RF performance first,
-physical footprint second." **They are a mission-priority judgment call, not
-a universal constant** — a mission with a very tight volume budget (e.g. a
-1U bus with little room to spare) might justifiably weight height and mass
-more heavily; a mission with a marginal link budget might push gain and
-efficiency even higher. Adjust `CRITERIA` in
-[`topsis_antenna_selection.py`](topsis_antenna_selection.py) to match your
-own mission's priorities — weights only need to sum to 1.0.
+### 1.3 Qualification & Heritage (`data/example_ait_data.csv`)
 
-## Methodology
+| Criterion | Column | Type | Rationale |
+|---|---|---|---|
+| **Qualification & TRL** | `Environmental Qualification Tests`, `Flight Heritage Mission` | Maximize ($1\text{–}5$) | Vibration + TVAC testing ($4.0$), partial testing ($2.5$), untested ($1.0$); $+1.0$ for orbital flight heritage; $-1.0$ if a deployment mechanism is required. |
 
-### 1. Data extraction
+---
 
-Each raw cell is free text (e.g. produced by manual extraction or an
-LLM-assisted reading of each paper), so it first has to be reduced to a
-single number:
+## 2. Mission Weight Profiles
 
-- A regular expression pulls out all numbers in the cell and keeps the
-  **last** one (e.g. `"7.7/12.8" → 12.8`, `"4-10" → 10`).
-- Cells containing a configurable list of "missing data" markers (`"Not
-  found"`, `"None"`, `"N/A"`, ...) are treated as missing (`NaN`) rather
-  than parsed.
-- The height/profile criterion is derived from a `"Length x Width x Height"`
-  dimensions string by taking the third number; if only two numbers are
-  present (no height reported), it is treated as missing rather than
-  mistaking the width for the height.
+Weights sum to $1.00$ per profile (`--profile`):
 
-### 2. Handling missing data
+| Criterion | Direction | `balanced` | `link_budget` | `compact_1u` | `low_risk` | `classic_5` |
+|---|---|---|---|---|---|---|
+| `Max Gain (dBi)` | Maximize | 0.18 | 0.28 | 0.12 | 0.12 | 0.25 |
+| `Bandwidth (%)` | Maximize | 0.12 | 0.15 | 0.10 | 0.10 | 0.20 |
+| `Radiation Efficiency (%)` | Maximize | 0.14 | 0.22 | 0.10 | 0.10 | 0.25 |
+| `ARBW (%)` | Maximize | 0.06 | 0.10 | 0.03 | 0.03 | 0.00 |
+| `Height_Profile_mm` | Minimize | 0.10 | 0.05 | 0.18 | 0.07 | 0.15 |
+| `Footprint_Area_mm2` | Minimize | 0.07 | 0.03 | 0.16 | 0.04 | 0.00 |
+| `Estimated_Weight_g` | Minimize | 0.07 | 0.04 | 0.10 | 0.04 | 0.15 |
+| `Substrate_AIT_Score` | Maximize | 0.06 | 0.03 | 0.06 | 0.15 | 0.00 |
+| `Qualification_Score` | Maximize | 0.20 | 0.10 | 0.15 | 0.35 | 0.00 |
 
-Any criterion missing for a given antenna is imputed with the **median** of
-that criterion across all other antennas, so a single unreported figure
-doesn't remove an otherwise well-documented design from the comparison. The
-script reports, per criterion, how many values were missing and what median
-was substituted, and the output table includes both the raw (`... (raw)`)
-and imputed values plus an `N_Criteria_Imputed` count per antenna — a higher
-count means that antenna's score leans more on dataset-wide medians and less
-on figures actually reported in its source paper, which is useful context
-when interpreting the ranking.
+- **Missing Data:** Unreported numeric values are imputed with the candidate-set median and tracked via `N_Criteria_Imputed`.
+- **Multi-Band Extraction:** When `--band` is specified (e.g., `--band S`), slash-separated values (e.g., `6.10/11.30`) are extracted at the matching band index.
+- **Scoring (`--method`):** Supports `topsis` (default closeness coefficient $C^* \in [0, 1]$) and `wsm` (normalized Weighted Sum Model).
 
-### 3. TOPSIS ranking
+---
 
-Given the resulting decision matrix `X` (alternatives × criteria):
-
-1. **Vector-normalize** each column: `r_ij = x_ij / sqrt(Σ_i x_ij²)`.
-2. **Apply criterion weights**: `v_ij = r_ij · w_j`.
-3. **Identify the ideal best/worst** for each criterion — the max for a
-   "maximize" criterion and the min for a "minimize" one (and vice versa
-   for the worst).
-4. **Compute the Euclidean distance** from each alternative to the ideal
-   best (`D+`) and ideal worst (`D-`).
-5. **Compute the closeness coefficient**: `C* = D- / (D+ + D-)`.
-
-`C*` ranges from 0 to 1; a design tied with the ideal best on every
-criterion scores 1, and one tied with the ideal worst on every criterion
-scores 0. Alternatives are ranked by `C*`, descending.
-
-## Input Data Format
-
-Both input files must share two **merge key** columns with matching values:
-`No` (an identifier) and `Title` (must match exactly between the two
-files). Expected columns (extra columns are ignored):
-
-**RF file**
-
-| Column | Example |
-|---|---|
-| `No`, `Title` | merge keys |
-| `Max Gain (dBi)` | `7.5` or `7.7/12.8` for a multi-band design |
-| `Bandwidth (%)` | `15.0` |
-| `Radiation Efficiency (%)` | `92.0` or `Not found.` |
-
-**AIT file**
-
-| Column | Example |
-|---|---|
-| `No`, `Title` | merge keys |
-| `Dimensions (mm)` | `80 x 80 x 3.2` (Length x Width x Height) |
-| `Weight (g)` | `45` or `Not found.` |
-
-Files may be comma- or tab-delimited; the delimiter is auto-detected.
-
-## Usage
+## 3. Usage
 
 ```bash
 pip install -r requirements.txt
 
-python topsis_antenna_selection.py \
+# Run with default dataset and balanced profile
+python antenna_selection.py
+
+# Run with Stage 1 constraints and compact_1u profile
+python antenna_selection.py \
     --rf data/example_rf_data.csv \
     --ait data/example_ait_data.csv \
-    --output topsis_ranking_results.csv
+    --band S \
+    --polarization Circular \
+    --max-cubesat-size 1U \
+    --max-height 6.5 \
+    --no-deployable \
+    --profile compact_1u \
+    --output ranking_results.csv
 ```
 
-All three arguments are optional and default to the example dataset and
-`topsis_ranking_results.csv` in the current directory.
+### CLI Options
 
-## Output
+| Argument | Default | Description |
+|---|---|---|
+| `--rf` | `data/example_rf_data.csv` | RF performance CSV/TSV path |
+| `--ait` | `data/example_ait_data.csv` | Mechanical/AIT CSV/TSV path |
+| `--output` | `ranking_results.csv` | Output CSV path |
+| `--profile` | `balanced` | `balanced`, `link_budget`, `compact_1u`, `low_risk`, `classic_5` |
+| `--method` | `topsis` | `topsis` or `wsm` |
+| `--band` | `None` | Filter by frequency band (`S`, `X`, `UHF`, ...) |
+| `--polarization` | `None` | Filter by polarization (`RHCP`, `LHCP`, `Circular`, `Linear`) |
+| `--max-cubesat-size` | `None` | Max CubeSat size (`1U`, `2U`, `3U`, `6U`) |
+| `--max-height` | `None` | Max Z-height thickness in mm |
+| `--max-weight` | `None` | Max mass in grams |
+| `--no-deployable` | `False` | Exclude mechanically deployable antennas |
 
-`topsis_ranking_results.csv` contains one row per antenna, with:
+---
 
-- the merge keys (`No`, `Title`)
-- each criterion's raw extracted value (`... (raw)`) and the value actually
-  used in the calculation after imputation
-- `N_Criteria_Imputed` — how many of the 5 criteria were imputed for that row
-- `TOPSIS_Score` — the closeness coefficient C\*
-- `Rank` — 1 = best
+## 4. References
 
-## Limitations
-
-- **Multi-value cells and multi-band designs.** Taking the *last* number in
-  a cell like `"7.7/12.8"` is a simple, transparent default, but for a
-  multi-band antenna it does not reliably correspond to any specific band —
-  the position of a value in the string depends on how the source data was
-  reported, not on a fixed band ordering. If your dataset includes
-  multi-band designs and the band-specific value matters, extract it
-  explicitly (e.g. by cross-referencing a center-frequency column) rather
-  than relying on this default.
-- **Median imputation can flatten differences.** When a criterion is
-  missing for a large share of alternatives, most of them end up sharing
-  the same imputed value, so that criterion stops differentiating the
-  ranking for those rows. Check `N_Criteria_Imputed` before treating a
-  ranking position as a strong result, and prefer filling in real figures
-  from the source papers wherever feasible.
-- **Weights encode a judgment call**, not a derived or universal
-  optimum — see [Criteria and Weights](#criteria-and-weights).
-
-
-
-## Inspiration and Acknowledgments
-
-This project was inspired by the [Multi-Criteria-Decision-Making](https://github.com/Pegah-Ardehkhani/Multi-Criteria-Decision-Making) repository by Pegah-Ardehkhani. 
-
-Their work provides an overview and implementation of various MCDM techniques (such as TOPSIS, VIKOR, AHP, and SAW). These algorithms were adapted for design requirements of CubeSat Antenas.
-
-
+1. **CubeSat Design Specification (CDS):** Cal Poly CubeSat Program, *CubeSat Design Specification Rev. 14.1*, California Polytechnic State University, 2022.
+2. **NASA Small Spacecraft SOA:** NASA Ames Research Center, *State-of-the-Art of Small Spacecraft Technology* (Communications / Antennas), NASA, 2024.
+3. **Outgassing Standard:** ASTM E595 / NASA SP-R-0022A, *Standard Test Method for Total Mass Loss and Collected Volatile Condensable Materials from Outgassing in a Vacuum Environment*.
+4. Y. Rahmat-Samii, V. Manohar, and J. M. Kovitz, "For Satellites, Think Small, Think CubeSats: A review of current status and emerging antenna technologies for CubeSats," *IEEE Antennas and Propagation Magazine*, vol. 59, no. 2, pp. 22–30, 2017 (`doi: 10.1109/MAP.2017.2655582`).
+5. S. Abulgasem et al., "Antenna Designs for CubeSats: A Review," *IEEE Access*, vol. 9, pp. 45289–45324, 2021 (`doi: 10.1109/ACCESS.2021.3066632`).
+6. **MCDM / TOPSIS:** C.-L. Hwang and K. Yoon, *Multiple Attribute Decision Making: Methods and Applications*, Springer-Verlag, 1981. Initial script structure inspired by [Pegah-Ardehkhani/Multi-Criteria-Decision-Making](https://github.com/Pegah-Ardehkhani/Multi-Criteria-Decision-Making).
